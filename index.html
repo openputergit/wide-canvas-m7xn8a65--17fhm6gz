@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visual Assistance Connect</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/annyang/2.6.1/annyang.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.skypack.dev/simple-peer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .focus-visible:focus {
+            outline: 3px solid #60a5fa;
+            outline-offset: 2px;
+        }
+        .video-container {
+            aspect-ratio: 16/9;
+        }
+        @media (max-width: 640px) {
+            .video-container {
+                aspect-ratio: 4/3;
+            }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+    <div id="app" class="p-4 max-w-4xl mx-auto">
+        <!-- Accessibility Skip Link -->
+        <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:p-4 focus:bg-blue-600 focus:text-white">
+            Skip to main content
+        </a>
+
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2" tabindex="0">Visual Assistance Connect</h1>
+            <p class="text-gray-600" tabindex="0">Voice-commanded video assistance service</p>
+        </header>
+
+        <!-- Main Content -->
+        <main id="main-content" class="space-y-6">
+            <!-- Status and Controls -->
+            <div class="bg-white p-6 rounded-lg shadow-md" aria-live="polite">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-semibold text-gray-800" tabindex="0">Connection Status</h2>
+                    <span :class="{'text-green-500': isConnected, 'text-red-500': !isConnected}" tabindex="0">
+                        {{connectionStatus}}
+                    </span>
+                </div>
+                
+                <!-- Video Container -->
+                <div class="video-container bg-gray-900 rounded-lg mb-4">
+                    <video id="remoteVideo" class="w-full h-full rounded-lg" autoplay playsinline></video>
+                    <video id="localVideo" class="w-1/4 absolute bottom-4 right-4 rounded" autoplay playsinline muted></video>
+                </div>
+
+                <!-- Voice Command Status -->
+                <div class="text-center p-4 bg-gray-50 rounded-lg mb-4" aria-live="assertive">
+                    <p class="text-lg" tabindex="0">{{voiceCommandStatus}}</p>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="grid grid-cols-2 gap-4">
+                    <button @click="toggleCall" class="p-4 rounded-lg text-white font-medium focus-visible"
+                        :class="isConnected ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'"
+                        aria-label="Toggle call">
+                        <i :class="isConnected ? 'bi-telephone-x' : 'bi-telephone'"
+                           class="bi me-2"></i>
+                        {{isConnected ? 'End Call' : 'Start Call'}}
+                    </button>
+                    <button @click="toggleMic" class="p-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium focus-visible"
+                        aria-label="Toggle microphone">
+                        <i :class="isMuted ? 'bi-mic-mute' : 'bi-mic'"
+                           class="bi me-2"></i>
+                        {{isMuted ? 'Unmute' : 'Mute'}}
+                    </button>
+                </div>
+            </div>
+
+            <!-- Agent Rating (shows after call) -->
+            <div v-if="showRating" class="bg-white p-6 rounded-lg shadow-md">
+                <h3 class="text-xl font-semibold mb-4" tabindex="0">Rate Your Experience</h3>
+                <div class="flex justify-center space-x-4">
+                    <button v-for="star in 5" 
+                            @click="rateAgent(star)"
+                            class="text-3xl focus-visible"
+                            :class="rating >= star ? 'text-yellow-400' : 'text-gray-300'"
+                            :aria-label="`Rate ${star} stars`">★</button>
+                </div>
+                <div class="mt-4 flex justify-center space-x-4">
+                    <button @click="prioritizeAgent" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 focus-visible">
+                        Prioritize Agent
+                    </button>
+                    <button @click="blockAgent" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus-visible">
+                        Block Agent
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const { createApp } = Vue
+
+        createApp({
+            data() {
+                return {
+                    isConnected: false,
+                    isMuted: false,
+                    connectionStatus: 'Disconnected',
+                    voiceCommandStatus: 'Listening for voice commands...',
+                    showRating: false,
+                    rating: 0,
+                    localStream: null,
+                    remoteStream: null,
+                    peer: null
+                }
+            },
+            mounted() {
+                this.initializeVoiceCommands()
+                this.initializeWebRTC()
+            },
+            methods: {
+                initializeVoiceCommands() {
+                    if (annyang) {
+                        const commands = {
+                            'start call': () => this.toggleCall(),
+                            'end call': () => this.toggleCall(),
+                            'mute': () => this.toggleMic(),
+                            'unmute': () => this.toggleMic(),
+                            'rate *rating': (rating) => {
+                                const numRating = parseInt(rating)
+                                if (numRating >= 1 && numRating <= 5) {
+                                    this.rateAgent(numRating)
+                                }
+                            },
+                            'prioritize agent': () => this.prioritizeAgent(),
+                            'block agent': () => this.blockAgent()
+                        }
+
+                        annyang.addCommands(commands)
+                        annyang.start()
+                    }
+                },
+                async initializeWebRTC() {
+                    try {
+                        this.localStream = await navigator.mediaDevices.getUserMedia({
+                            video: true,
+                            audio: true
+                        })
+                        document.getElementById('localVideo').srcObject = this.localStream
+                    } catch (err) {
+                        console.error('Error accessing media devices:', err)
+                    }
+                },
+                toggleCall() {
+                    this.isConnected = !this.isConnected
+                    this.connectionStatus = this.isConnected ? 'Connected' : 'Disconnected'
+                    
+                    // Simulate call end
+                    if (!this.isConnected) {
+                        setTimeout(() => {
+                            this.showRating = true
+                        }, 1000)
+                    } else {
+                        this.showRating = false
+                    }
+                },
+                toggleMic() {
+                    this.isMuted = !this.isMuted
+                    if (this.localStream) {
+                        this.localStream.getAudioTracks().forEach(track => {
+                            track.enabled = !this.isMuted
+                        })
+                    }
+                },
+                rateAgent(rating) {
+                    this.rating = rating
+                    this.voiceCommandStatus = `Agent rated ${rating} stars`
+                    // Simulate API call
+                    console.log(`Agent rated: ${rating} stars`)
+                },
+                prioritizeAgent() {
+                    this.voiceCommandStatus = 'Agent prioritized for future calls'
+                    // Simulate API call
+                    console.log('Agent prioritized')
+                },
+                blockAgent() {
+                    this.voiceCommandStatus = 'Agent blocked from future calls'
+                    // Simulate API call
+                    console.log('Agent blocked')
+                }
+            }
+        }).mount('#app')
+    </script>
+<script>document.body.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); return }, { passive: false })</script>
+	</body>
+</html>
